@@ -1,0 +1,54 @@
+{
+  "name": "和融联择机量化策略 v1.0",
+  "status": "research_only_not_backtested",
+  "benchmark": "399006.SZ",
+  "confirmation_indices": ["000852.SH", "932000.CSI"],
+  "bar_frequencies": ["60m", "120m", "1d", "1w", "1mo"],
+  "principles": [
+    "先判长期趋势，再做短期量价交易",
+    "上涨趋势中持有为主、回撤低接；震荡期高卖低买；顶部风险期新高减仓",
+    "价格是结果，趋势与成交量优先；量价指标不同步时降低确信度",
+    "外部新闻不直接生成方向信号，只触发波动与风险预算检查",
+    "同一市场状态、对象和时间尺度发生冲突时，日期更新的规则优先"
+  ],
+  "feature_defaults": {
+    "ma_windows_daily": [5, 10, 20, 30, 40, 60, 90, 120, 160, 250],
+    "cycle_windows_days": [20, 40, 60, 120, 240],
+    "macd": {"fast": 12, "slow": 26, "signal": 9},
+    "new_high_lookback_days": 60,
+    "new_high_cluster_window_days": 20,
+    "atr_window_days": 20,
+    "volume_ma_days": 20
+  },
+  "thresholds_to_backtest": {
+    "single_day_turnover_hot": 0.07,
+    "rolling_20d_turnover_hot": 1.0,
+    "weekly_ma_deviation_hot": 0.15,
+    "monthly_panic_return": -0.20,
+    "rapid_drop_atr": -2.0,
+    "volume_contraction_ratio": 0.75,
+    "rebound_distribution_volume_ratio": 1.20,
+    "near_support_pct": 0.02,
+    "near_resistance_pct": 0.02,
+    "new_high_cluster_count": 3,
+    "risk_score_defensive": 3,
+    "risk_score_exit": 5
+  },
+  "position_targets": {
+    "defensive": 0.15,
+    "range_low": 0.35,
+    "range_high": 0.60,
+    "trend_hold": 0.75,
+    "panic_buy": 0.80,
+    "maximum": 0.90
+  },
+  "execution": {
+    "trade_in_tranches": 3,
+    "minimum_days_between_same_direction_trades": 2,
+    "default_leverage": 1.0,
+    "short_overlay_enabled_by_default": false,
+    "short_overlay_note": "原文仅在特定阶段提出中证1000空头保护；衍生品对冲作为可选模块，须单独回测和授权。"
+  },
+  "static_levels_policy": "1954、2576、2683、2741-2890、2830、3340、3468、3576、3712、3747、3812-3845、4000等均为当时情境锚点，不作为永久常数。系统应将其替换为前期突破周收盘、缺口边界、前高/前低、均线密集区等滚动结构位。",
+  "evidence_registry": "data/article_rule_registry.json"
+}
