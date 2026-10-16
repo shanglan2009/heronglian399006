@@ -36,7 +36,7 @@ class HardeningTests(unittest.TestCase):
     def test_backup(self):
         result=API(self.s).export_records();self.assertTrue(result['ok']);self.assertEqual(len(list((self.s.root/'exports').glob('*.sqlite3'))),1)
     def test_rules_are_chronological_source(self):
-        r=API(self.s).get_rules()['articles'];self.assertEqual(len(r),45);self.assertEqual(r[-1]['date'],'2026-08-28');self.assertEqual(sorted(a['date'] for a in r),[a['date'] for a in r])
+        r=API(self.s).get_rules()['articles'];self.assertEqual(len(r),47);self.assertEqual(r[-1]['date'],'2026-09-24');self.assertEqual(sorted(a['date'] for a in r),[a['date'] for a in r]);self.assertEqual(r[-1]['published_at'],'2026-09-28T09:19:00+08:00')
     def test_shadow_separate_from_real_signals(self):
         t=datetime(2026,9,4,10,tzinfo=SH)
         with self.s.lock:self.s.put('shadow_families',['panic_rebound']);self.s.db.commit()

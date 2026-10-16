@@ -7,7 +7,7 @@ from statistics import mean
 from datetime import date
 import math
 
-VERSION='HRL-1.2-live-conservative'
+VERSION='HRL-1.4-downside-guardrails'
 
 def ema(values,n):
     out=[]; v=values[0]; a=2/(n+1)

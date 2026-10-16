@@ -7,6 +7,7 @@ from app.calendar_cn import now
 class API:
     def __init__(self,service): self._s=service
     def get_state(self): return self._s.state()
+    def get_repair(self): return self._s.repair_state()
     def get_rules(self):
         root=Path(getattr(sys,'_MEIPASS',Path(__file__).resolve().parents[1]))
         return json.loads((root/'data/article_rule_registry.json').read_text(encoding='utf-8'))
