@@ -5,7 +5,7 @@ from app import market
 from app.calendar_cn import now, phase, trading_day, sessions_after, SH
 from app.signals import analyse,size_order,wilson,VERSION
 from app.review import diagnose
-from app import repair,opportunities,risk
+from app import repair,opportunities,risk,capital
 
 
 def secret_codec(text, decrypt=False):
@@ -29,6 +29,7 @@ class Service:
         self.db=sqlite3.connect(self.root/'monitor.sqlite3',check_same_thread=False)
         self.db.row_factory=sqlite3.Row; self.lock=threading.RLock(); self.refresh_lock=threading.Lock()
         self.stop=threading.Event();self.wake=threading.Event();self.notices=queue.Queue()
+        self.close_lock=threading.RLock();self.next_recovery=0
         self.window=None; self.quotes={};self.bars={};self.analysis=None;self.error='';self.last_fetch=''; self.hist_date=''
         self.db.executescript('''
         PRAGMA journal_mode=WAL;
@@ -50,6 +51,7 @@ class Service:
         CREATE TABLE IF NOT EXISTS risk_alerts(id INTEGER PRIMARY KEY,ts TEXT,day TEXT,level INTEGER,payload TEXT);
         CREATE TABLE IF NOT EXISTS monitor_days(day TEXT PRIMARY KEY,first_seen TEXT,last_seen TEXT,last_fresh TEXT,ticks INTEGER DEFAULT 0,fresh_ticks INTEGER DEFAULT 0,gaps INTEGER DEFAULT 0);
         CREATE TABLE IF NOT EXISTS health_alerts(day TEXT,code TEXT,ts TEXT,message TEXT,PRIMARY KEY(day,code));
+        CREATE TABLE IF NOT EXISTS close_status(day TEXT PRIMARY KEY,attempted TEXT,status TEXT,detail TEXT);
         ''')
         defaults={'shares':1000,'cost':3.0,'cash':10000.0,'initial_value':13000.0,
                   'push_enabled':False,'channel':'wechat','token':'','poll':30,'roundtrip_bps':12,
@@ -57,6 +59,7 @@ class Service:
                   'risk_peak':0,'risk_pending':None,'risk_confirmed':None,'health_started':now().date().isoformat()}
         for k,v in defaults.items(): self.db.execute('INSERT OR IGNORE INTO settings VALUES(?,?)',(k,json.dumps(v)))
         self.db.commit()
+        self.capital=capital.CapitalMonitor(self)
         # A saved snapshot helps offline viewing but cannot itself trigger an order recommendation.
         try:
             cached=json.loads((self.root/'last_market.json').read_text(encoding='utf-8'))
@@ -165,6 +168,10 @@ class Service:
         if a and a.get('action')=='买入' and r['live'] and (not r['ready'] or r['level']>0 or recovering):
             a.update(action='观望',allocation=0)
             a['reasons'].append('持仓风控优先：风险尚未解除或数据不足，暂停新增买入')
+        flow=self.capital.state(t)
+        if a and a.get('action')=='买入' and r['live'] and flow['mode']=='filter' and flow['ready'] and flow['outflow']:
+            a.update(action='观望',allocation=0)
+            a['reasons'].append('资金过滤：创业板ETF样本出现已确认日度异常净赎回，暂停新增买入；交易者身份未确认')
         return a
 
     def state(self):
@@ -184,8 +191,10 @@ class Service:
                     display['reasons'].append('原条件仍可成立，但同一机会/今日同向已提醒，不重复操作')
             return {'now':t.isoformat(),'phase':phase(t),'quotes':self.quotes,'error':self.error,'last_fetch':self.last_fetch,
                 'fresh':self.fresh(t),'history_date':self.hist_date,'analysis':display,'downside_risk':self.risk_state(t),
+                'capital':self.capital.details(t),
                 'monitor_health':self.rows('SELECT * FROM monitor_days ORDER BY day DESC LIMIT 7'),
                 'health_warnings':self.rows('SELECT * FROM health_alerts ORDER BY ts DESC LIMIT 10'),
+                'close_status':self.rows('SELECT * FROM close_status ORDER BY day DESC LIMIT 20'),
                 'portfolio':dict(shares=shares,cost=cost,cash=cash,sellable=self.sellable(t.date().isoformat()),
                     value=None if p is None else p*shares,profit=None if p is None else (p-cost)*shares,
                     total=None if p is None else p*shares+cash,realized=realized),
@@ -247,6 +256,7 @@ class Service:
         day=t.date().isoformat(); ph=phase(t);m=t.hour*60+t.minute
         if ph in ['上午交易','下午交易'] and self.fresh(t) and not self.error:
             self.check_risk(t)
+            self.capital.observe(t,self.risk_state(t))
             opportunities.observe(self,t,self.analysis)
             self.capture_repair(t)
         # Open brief is only issued in the opening window; missed sessions are not fabricated.
@@ -288,14 +298,18 @@ class Service:
             body=f"{a['action']} · {a['regime']}\n"+'\n'.join(a['reasons'])
             if risk_override:body+=f"\n登记仓位 {risk_override['exposure']:.1%}；目标上限 {risk_override['target']:.0%}。参考减仓按最新登记持仓重新计算，不是追加卖单；请核对已成交记录与T+1可卖份额。"
             if qty: body+=f'\n159915参考 {price:.3f} 元，小批 {qty} 份；请在券商核实可成交价格。'
+            flow=self.capital.state(t)
+            body+='\n资金观察：'+flow['label']+'（日度数据 '+str(flow['data_day'] or '待取得')+'，交易者身份未确认）。'
             body+='\n建议有效10分钟；仅提示，不自动下单。次一/三/五交易日收盘验证，胜率不是盈利承诺。'
             if a.get('shadow_action') and slot!='open':
                 # Shadow records are not executable advice; avoid mobile or desktop trading prompts.
                 return
             self.event('decision',title,body)
 
-    def settle(self,t,final=False):
-        bars={r['date']:r for r in self.bars.get('159915',[]) if r['date']<t.date().isoformat() or (final and t.hour*60+t.minute>=905)}
+    def settle(self,t,final=False,bars_override=None):
+        snapshot=self.bars if bars_override is None else bars_override
+        self.capital.settle(t,snapshot.get('159915',[]),final)
+        bars={r['date']:r for r in snapshot.get('159915',[]) if r['date']<t.date().isoformat() or (final and t.hour*60+t.minute>=905 and r['date']==t.date().isoformat())}
         for pair in self.rows('SELECT * FROM repair_pairs'):
             for horizon in (1,3,5):
                 due=sessions_after(pair['day'],horizon)
@@ -320,7 +334,7 @@ class Service:
                     self.db.execute(f'INSERT OR IGNORE INTO {table} VALUES(?,?,?,?,?,?,?)',(d['id'],h,due,net,int(net>0),bars[due]['close'],t.isoformat()));self.db.commit()
                     if shadow:continue
                     frozen=self.rows('SELECT price FROM outcomes WHERE decision_id=? AND horizon=?',(d['id'],h))[0]['price']
-                    index_close=next((r['close'] for r in self.bars.get('399006',[]) if r['date']==due),None)
+                    index_close=next((r['close'] for r in snapshot.get('399006',[]) if r['date']==due),None)
                     details=diagnose(d['action'],d['price'],frozen,d['idx'],index_close,payload['roundtrip_bps'])
                     self.db.execute('INSERT OR IGNORE INTO diagnostics VALUES(?,?,?)',(d['id'],h,json.dumps(details,ensure_ascii=False)));self.db.commit()
 
@@ -343,22 +357,63 @@ class Service:
             self.db.execute('INSERT OR REPLACE INTO learning VALUES(?,?)',(day,json.dumps(result,ensure_ascii=False)));self.db.commit()
         return result
 
-    def close_report(self,t):
+    def recover_reports(self,t,force=False):
+        """Recover observed days only, including after 18:00 and at weekend startup."""
+        if not self.get('monitor_enabled') or (not force and time.monotonic()<self.next_recovery):return
+        self.next_recovery=time.monotonic()+900
+        days=self.rows('SELECT day FROM (SELECT day FROM monitor_days UNION SELECT day FROM decisions) WHERE day<=? AND day NOT IN (SELECT day FROM reports) ORDER BY day', (t.date().isoformat(),))
+        days=[r['day'] for r in days if trading_day(r['day']) and (r['day']<t.date().isoformat() or t.hour*60+t.minute>=905)]
+        if not days:return
+        try:final={s:market.history(s) for s in ['399006','159915']}
+        except Exception as ex:
+            for day in days:self.close_failure(day,ex)
+            return
+        for day in days:
+            historical=day<t.date().isoformat()
+            self.close_report(datetime.fromisoformat(day+'T15:10:00').replace(tzinfo=SH),final_data=final,historical=historical)
+
+    def close_failure(self,day,ex):
+        detail=type(ex).__name__+': '+str(ex)[:400]
+        with self.lock:
+            old=self.rows('SELECT detail FROM close_status WHERE day=?',(day,))
+            self.db.execute('INSERT OR REPLACE INTO close_status VALUES(?,?,?,?)',(day,now().isoformat(),'等待重试',detail));self.db.commit()
+        if not old or old[0]['detail']!=detail:
+            self.event('close_wait','收盘复盘待重试 · '+day,detail+'。将定期重试，重启后也会补结算；不补造买卖建议。',phone=False)
+
+    def portfolio_at_close(self,day):
+        # Reverse subsequent actual fills, never value an old day with today's position.
+        shares=self.get('shares');cash=self.get('cash')
+        for f in self.rows('SELECT * FROM fills WHERE day>? ORDER BY id DESC',(day,)):
+            if f['side']=='买入':shares-=f['qty'];cash+=f['qty']*f['price']+f['fee']
+            else:shares+=f['qty'];cash-=f['qty']*f['price']-f['fee']
+        if shares<0 or cash<-.01:raise ValueError('历史账户无法从成交账本还原，请核对账本')
+        return shares,round(cash,4)
+
+    def close_report(self,t,final_data=None,historical=False):
+        with self.close_lock:
+            try:return self._close_report(t,final_data,historical)
+            except Exception as ex:self.close_failure(t.date().isoformat(),ex)
+
+    def _close_report(self,t,final_data=None,historical=False):
         day=t.date().isoformat()
+        if self.rows('SELECT day FROM reports WHERE day=?',(day,)):return
+        if not trading_day(day) or t.hour*60+t.minute<905:return
         # Re-fetch final unadjusted daily bars; outdated closes never settle an outcome.
         try:
-            final={s:market.history(s) for s in ['399006','159915']}
-            if any(v[-1]['date']!=day for v in final.values()):raise ValueError('收盘日K未齐')
-            self.bars=final
-        except Exception:
-            if not self.rows("SELECT id FROM events WHERE kind='close_wait' AND ts LIKE ?",(day+'%',)):
-                self.event('close_wait','收盘数据待确认','收盘日K尚未齐全，将继续尝试；胜率与复盘暂不结算。')
+            source=final_data if final_data is not None else {s:market.history(s) for s in ['399006','159915']}
+            final={s:[r for r in source[s] if r['date']<=day] for s in ['399006','159915']}
+            for symbol,rows in final.items():
+                if len(rows)<2 or rows[-1]['date']!=day:
+                    raise ValueError(f'{symbol} 目标日期 {day}，最新可用日K {rows[-1]["date"] if rows else "无"}')
+        except Exception as ex:
+            self.close_failure(day,ex)
             return
-        self.settle(t,final=True);learning=self.learn(day)
+        self.settle(t,final=True,bars_override=final)
+        if not historical:self.learn(day)
         with self.lock:
-            close=final['159915'][-1]['close'];shares=self.get('shares');cash=self.get('cash')
+            close=final['159915'][-1]['close'];shares,cash=self.portfolio_at_close(day)
             self.db.execute('INSERT OR IGNORE INTO equity VALUES(?,?,?,?,?)',(day,shares*close+cash,shares,cash,close));self.db.commit()
-        ds=self.rows('SELECT * FROM decisions WHERE day=?',(day,));agg=self.rows('SELECT COUNT(*) n,SUM(success) wins,AVG(net) avg FROM outcomes WHERE horizon=1')[0]
+        ds=self.rows('SELECT * FROM decisions WHERE day=?',(day,));agg=self.rows('SELECT COUNT(*) n,SUM(success) wins,AVG(net) avg FROM outcomes WHERE horizon=1 AND due<=?',(day,))[0]
         before=final['399006'][-2]['close'];last=final['399006'][-1]['close'];change=(last/before-1)*100
         directional=[d for d in ds if d['action']!='观望']
         diagnostic=[]
@@ -371,7 +426,7 @@ class Service:
         body=f'创业板收盘 {last:.2f} 点，当日 {change:+.2f}%。\n今日记录 {len(ds)} 个决策，其中 {len(directional)} 个买卖观察点。\n'
         body+='\n'.join(diagnostic) if diagnostic else '今日未记录有效买卖信号；未运行的时段不补造建议。'
         body+=f'\n次一交易日到期方向胜率：{rate}。今日新信号仍待后续交易日验证。\n卖出成功指避免后续下跌，并非卖出后的实际盈利；实际收益仅据已登记成交。\n'
-        body+='学习结果：'+('部分信号降级为影子观察。' if self.get('shadow_families') else '样本不足或没有充分退化证据，保持当前规则。')
+        body+=('历史补结算：不追溯修改当日策略，不补造交易或信号。' if historical else '学习结果：'+('部分信号降级为影子观察。' if self.get('shadow_families') else '样本不足或没有充分退化证据，保持当前规则。'))
         pair=self.rows('SELECT baseline,candidate FROM repair_pairs WHERE day=?',(day,))
         body+='\n修复逻辑并行研究：'+(f"首个有效快照旧规则 {pair[0]['baseline']} / 新假设 {pair[0]['candidate']}；仅方向诊断，不执行、不混入正式胜率。" if pair else '今日无有效配对快照，不补造。')
         last_risk=self.rows('SELECT payload FROM risk_samples WHERE day=?',(day,))
@@ -380,13 +435,17 @@ class Service:
             body+=f"\n最后有效盘中风险观察：{r['label']}，登记仓位 {r['exposure']:.1%}；目标上限 "+('未触发' if r['target'] is None else f"{r['target']:.0%}")+'。参考建议不等于已成交，实际收益只按登记账本。'
         coverage=self.rows('SELECT fresh_ticks,gaps FROM monitor_days WHERE day=?',(day,))
         if coverage:body+=f"\n监控覆盖：{coverage[0]['fresh_ticks']}次有效行情采样，检测到{coverage[0]['gaps']}次间隔缺口；不代表全天无遗漏。"
-        with self.lock:self.db.execute('INSERT OR IGNORE INTO reports VALUES(?,?)',(day,body));self.db.commit()
-        self.event('close','收盘复盘 · '+day,body)
+        body+='\n'+(f'补生成于 {now().isoformat()}；仅使用该日及此前日K和已登记成交；不以当前资金观察代替历史快照。' if historical else self.capital.summary(t))
+        with self.lock:
+            self.db.execute('INSERT OR IGNORE INTO reports VALUES(?,?)',(day,body))
+            self.db.execute('INSERT OR REPLACE INTO close_status VALUES(?,?,?,?)',(day,now().isoformat(),'已补结算' if historical else '已完成',''))
+            self.db.commit()
+        self.event('close','收盘复盘 · '+day,body,phone=not historical)
 
     def push_pending(self):
         if not self.get('push_enabled') or not self.get('token'): return
         for e in self.rows("SELECT * FROM events WHERE status='待发送' AND attempts<3 AND retry_at<=? ORDER BY id LIMIT 3",(time.time(),)):
-            if e['kind'] in ('decision','health_warning') and (now()-datetime.fromisoformat(e['ts'])).total_seconds()>600:
+            if e['kind'] in ('decision','health_warning','capital_signal','capital_news') and (now()-datetime.fromisoformat(e['ts'])).total_seconds()>600:
                 with self.lock:
                     self.db.execute("UPDATE events SET status='建议过期·未发送' WHERE id=?",(e['id'],));self.db.commit()
                 continue
@@ -402,13 +461,15 @@ class Service:
                 self.db.execute('UPDATE events SET status=?,attempts=attempts+1,retry_at=?,receipt=? WHERE id=?',(status,time.time()+60*(e['attempts']+1),receipt,e['id']));self.db.commit()
 
     def run(self):
+        self.capital.start()
         self.refresh()
         while not self.stop.is_set():
             try:
                 t=now();ph=phase(t)
                 if self.get('monitor_enabled') and trading_day(t.date()) and 565<=t.hour*60+t.minute<1080:
-                    self.refresh();self.dispatch_due(t)
+                    self.refresh();t=now();self.dispatch_due(t)
                     self.monitor_health(t)
+                self.recover_reports(t)
                 self.push_pending()
             except Exception as ex:self.error='监控轮次异常：'+type(ex).__name__+'；下一轮重试'
             self.wake.wait(self.get('poll'));self.wake.clear()

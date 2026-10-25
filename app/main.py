@@ -12,6 +12,13 @@ def main():
     if getattr(sys,'frozen',False):
         sys.stdout=sys.stderr=open(base/'application.log','a',encoding='utf-8',buffering=1)
     print('Starting native application',flush=True)
+    if '--diagnose-data' in sys.argv:
+        # Public-source diagnostics only; no account initialization or notifications.
+        from app import capital_data,market
+        for name,read in [('capital',lambda:capital_data.fetch(capital_data.HUIJIN)),('quotes',market.quotes)]:
+            try:print('Data diagnostic',name,'OK',len(read()),flush=True)
+            except Exception:traceback.print_exc()
+        return
     ctypes.windll.kernel32.CreateMutexW.restype=ctypes.c_void_p
     mutex=ctypes.windll.kernel32.CreateMutexW(None,False,'Local\\HeronglianMonitor-v1')
     if ctypes.windll.kernel32.GetLastError()==183:

@@ -1,0 +1,43 @@
+(()=>{
+  const button=document.createElement('button');button.dataset.page='capital';button.textContent='▥　ETF资金与国家队';
+  document.querySelector('nav').insertBefore(button,document.querySelector('[data-page=settings]'));
+  const section=document.createElement('section');section.id='capital';section.className='page';
+  section.innerHTML=`<div class="panel-head"><div><h2>ETF资金与国家队公开动向</h2><p class="muted">创业板直接资金压力 · 宽基市场背景 · 汇金官方资讯</p></div><label>使用方式<select id="capital-mode"><option value="shadow">并行观察（默认）</option><option value="filter">异常净赎回时暂停新增买入</option></select></label></div>
+  <div class="soft">资金候选先独立验证，原有减仓风控始终运行。日度份额反映申赎结果，无法识别交易者；汇金历史持仓或增持声明也不代表当前即时交易。</div>
+  <article class="panel"><h3 id="capital-label">等待数据</h3><p id="capital-reasons"></p><div class="cards"><article><label>创业板3只样本 · 单日净申赎估算</label><strong id="capital-one">—</strong><small id="capital-date"></small></article><article><label>连续3个交易日</label><strong id="capital-three">—</strong><small>缺失任一天时不计算</small></article><article><label>连续5个交易日</label><strong id="capital-five">—</strong><small>正值净申购 / 负值净赎回</small></article></div><div id="capital-trend"></div><p class="muted" id="capital-method"></p></article>
+  <article class="panel"><h3>观察池与数据状态</h3><div class="capital-scroll" id="capital-funds"></div><p class="muted">份额来源：深交所 / 上交所；同日单位净值：天天基金。深交所当日晚间数据仅供参考，以次日早间更新为准。金额采用份额变化 × 同日单位净值，并非国家队成交金额。观察池为固定样本，不覆盖全市场。</p><div id="capital-background"></div></article>
+  <div class="two"><article class="panel"><h3>汇金官网ETF资讯</h3><p class="muted" id="capital-news-status"></p><div id="capital-news"></div></article><article class="panel"><h3>独立验证与错误分析</h3><div id="capital-stats"></div><p class="muted">候选方向在随后第1、3、5、20个交易日收盘验证，费用假设保存于当时快照；历史回填不产生预测记录。对照仅比较同一快照的原始策略方向，观望不计收益。统计不是账户回测；新规则暂不自动调参。</p><div id="capital-results"></div></article></div>
+  <article class="panel"><h3>最近资金候选</h3><div id="capital-samples"></div></article>
+  <article class="panel"><h3>实名持仓证据登记</h3><p class="muted">定期报告的实名持仓需人工核验后登记；当前未自动解析报告全文。请记录主体原名、持仓截止日、公告发布日期和持有份数。人工记录单独展示，不自动认证国家队身份，不改变买卖信号。</p>
+  <form id="capital-holding-form" class="formrow"><label>持有人原名<input name="subject" maxlength="80" required placeholder="按报告原文填写"></label><label>ETF<select name="code" id="capital-holding-code"></select></label><label>持仓截止日<input type="date" name="asof" required></label><label>公告发布日期<input type="date" name="published" required></label><label>持有份数（份）<input type="number" name="shares" min="0" step="any" required></label><label>官方公告链接<input type="url" name="url" required placeholder="https://"></label><button type="submit">登记证据</button></form><div class="capital-scroll" id="capital-holdings"></div></article>`;
+  document.querySelector('main').insertBefore(section,document.querySelector('footer'));
+  button.onclick=()=>{document.querySelectorAll('nav button,.page').forEach(x=>x.classList.remove('active'));button.classList.add('active');section.classList.add('active');txt('page-title','ETF资金与国家队');window.scrollTo(0,0)};
+  const style=document.createElement('style');style.textContent='.capital-scroll{overflow-x:auto}.capital-scroll table{min-width:760px}#capital-reasons,#capital-news p{white-space:pre-line}#capital-trend svg{width:100%;max-height:180px}#capital-holding-form{flex-wrap:wrap}#capital-holding-form label{min-width:150px;flex:1}#capital-news a,#capital-holdings a{color:#36846d}#capital-news .entry{overflow-wrap:anywhere}';document.head.append(style);
+  const small=document.createElement('article');small.className='panel';small.innerHTML='<div class="panel-head"><h3>ETF资金压力</h3><button id="capital-open">查看资金与官方动向 →</button></div><p id="capital-home">正在连接交易所份额数据</p>';
+  $('home').insertBefore(small,$('home').querySelector('.hero').nextSibling);$('capital-open').onclick=()=>button.click();
+  const amount=v=>v==null?'—':(v>=0?'+':'')+num(v/1e8,2)+' 亿';
+  const safeLink=u=>{try{const x=new URL(u);return x.protocol==='https:'?esc(x.href):''}catch{return ''}};
+  $('capital-mode').onchange=async e=>{await call('set_capital_mode',e.target.value);tick()};
+  $('capital-holding-form').onsubmit=async e=>{e.preventDefault();const r=await call('add_capital_holding',Object.fromEntries(new FormData(e.target)));if(r.ok){e.target.reset();tick()}};
+  const original=render;
+  render=function(s){original(s);const f=s.capital;if(!f)return;
+    if(document.activeElement!==$('capital-mode'))$('capital-mode').value=f.mode;
+    txt('capital-label',f.label+' · '+(f.mode==='filter'?'买入过滤已启用':'并行研究'));
+    txt('capital-home',`${f.label} · 数据日 ${f.data_day||'待取得'} · ${f.ready?'日度数据校验通过':'数据待确认'}。交易者身份未确认。`);
+    txt('capital-reasons',f.reasons.join('\n'));txt('capital-one',amount(f.amount));txt('capital-three',amount(f.three));txt('capital-five',amount(f.five));
+    txt('capital-date',`数据日 ${f.data_day||'—'} · 应到日期 ${f.expected||'—'}${f.ready?'':' · 当前不用于资金过滤'}`);
+    txt('capital-method',`当日异常门槛 ${amount(f.threshold)}：绝对金额1亿元、前日规模1%、历史绝对流量90%分位（至少20日）取较高值；或连续3日同向、合计超过规模2.5%且3亿元，并需至少2只ETF同向。工程初值，尚未经收益优化。`);
+    const hist=f.history||[],valid=hist.filter(x=>x.amount!=null),max=Math.max(1,...valid.map(x=>Math.abs(x.amount)));
+    $('capital-trend').innerHTML=hist.length?`<svg viewBox="0 0 800 160" role="img" aria-label="创业板样本日度净申赎估算柱形图，红色流入绿色流出，灰点缺失"><line x1="20" x2="780" y1="70" y2="70" stroke="#aaa"/>${hist.map((p,i)=>{const x=22+i*750/hist.length,w=Math.max(3,600/hist.length),h=p.amount==null?0:Math.abs(p.amount)/max*58;return p.amount==null?`<circle cx="${x}" cy="70" r="2" fill="#999"><title>${esc(p.day)} 数据缺失</title></circle>`:`<rect x="${x}" y="${p.amount>=0?70-h:70}" width="${w}" height="${Math.max(1,h)}" fill="${p.amount>=0?'#ba5d58':'#36846d'}"><title>${esc(p.day)} ${amount(p.amount)}</title></rect>`}).join('')}<text x="20" y="150" font-size="12" fill="#85938b">${esc(hist[0].day)}</text><text x="780" y="150" text-anchor="end" font-size="12" fill="#85938b">${esc(hist.at(-1).day)}</text></svg>`:empty('等待日度资金序列');
+    $('capital-funds').innerHTML='<table><tr><th>ETF / 分组</th><th>数据日</th><th>净申赎估算</th><th>份额（亿份）</th><th>最近检查</th><th>数据状态</th></tr>'+f.funds.map(r=>`<tr><td>${esc(r.code+' '+r.name)}<small> · ${esc(r.group)}</small></td><td>${esc(r.day||'—')}</td><td>${amount(r.amount)}</td><td>${r.shares==null?'—':num(r.shares/1e8)}</td><td>${esc(date(r.checked))}</td><td>${esc(r.error||r.issue||(r.day===f.expected&&r.amount!=null?'该日数据完整':'滞后 / 等待数据'))}</td></tr>`).join('')+'</table>';
+    $('capital-background').innerHTML='<p>市场背景（不直接映射创业板买卖）：'+f.background.map(x=>`${esc(x.name)} ${amount(x.amount)}（${esc(x.day||'待取得')}，${x.covered||0}/${x.total||'—'}只）`).join('；')+'</p>';
+    txt('capital-news-status',(f.news_status||[]).map(x=>`${x.name} ${date(x.checked)} ${x.error||'本次读取完成'}`).join('；')||'等待官网检查');
+    $('capital-news').innerHTML=f.news.length?f.news.map(x=>`<div class="entry"><h4>${esc(x.title)}</h4><small>${esc(x.published)} · ${esc(x.evidence)}</small><p>${esc(x.excerpt)}</p><a href="${safeLink(x.url)}" target="_blank" rel="noopener noreferrer">查看官方原文 ↗</a></div>`).join(''):empty('尚未取得ETF相关资讯；不代表国家队没有交易');
+    $('capital-stats').innerHTML=(f.stats.length?'<table><tr><th>窗口</th><th>命中 / 到期</th><th>平均净方向变化</th></tr>'+f.stats.map(x=>`<tr><td>${x.horizon}交易日</td><td>${x.wins} / ${x.n}</td><td>${pct(x.avg)}</td></tr>`).join('')+'</table>':empty('尚无到期资金候选，胜率待真实样本验证'))+`<p>${esc(f.learning)}</p>`;
+    $('capital-results').innerHTML=f.results.slice(0,4).map(x=>`<div class="entry"><small>${esc(x.day)} ${esc(x.action)} · ${x.horizon}日验证</small><p>${esc(x.reason)}；净方向变化 ${pct(x.net)}；后续完整交易日最大不利变化 ${pct(x.adverse)}。</p></div>`).join('');
+    $('capital-samples').innerHTML=f.samples.length?f.samples.map(x=>`<div class="entry"><h4>${esc(x.action)}候选 <span class="tag">仅并行研究</span></h4><small>${esc(date(x.ts))} · 原始策略 ${esc(x.baseline)} · ETF ${num(x.price,3)}</small><p>${esc(JSON.parse(x.payload).reasons.join('；'))}</p></div>`).join(''):empty('尚无资金与价格同向确认的实时候选，不用历史数据补造');
+    if(!$('capital-holding-code').options.length)$('capital-holding-code').innerHTML=f.funds.map(x=>`<option value="${esc(x.code)}">${esc(x.code+' '+x.name)}</option>`).join('');
+    const holds=f.holdings||[];
+    $('capital-holdings').innerHTML=holds.length?'<table><tr><th>主体 / ETF</th><th>截止日 / 发布日</th><th>持有份数</th><th>较前期变化</th><th>证据</th></tr>'+holds.map((x,i)=>{const prev=holds.slice(i+1).find(y=>y.subject===x.subject&&y.code===x.code&&y.asof<x.asof);return `<tr><td>${esc(x.subject)} / ${esc(x.code)}</td><td>${esc(x.asof)} / ${esc(x.published)}</td><td>${num(x.shares,0)}</td><td>${prev?num(x.shares-prev.shares,0)+' 份':'无可比记录'}</td><td><a href="${safeLink(x.url)}" target="_blank" rel="noopener noreferrer">人工登记·待核验 ↗</a></td></tr>`}).join('')+'</table>':empty('暂无已登记实名持仓；ETF份额变化不替代实名证据');
+  };
+})();

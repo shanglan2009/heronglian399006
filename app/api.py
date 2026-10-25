@@ -7,7 +7,33 @@ from app.calendar_cn import now
 class API:
     def __init__(self,service): self._s=service
     def get_state(self): return self._s.state()
+    def retry_reports(self):
+        self._s.next_recovery=0;self._s.wake.set()
+        return {'ok':True}
     def get_repair(self): return self._s.repair_state()
+    def set_capital_mode(self,mode):
+        if mode not in ['shadow','filter']:return {'ok':False,'message':'请选择有效资金观察模式'}
+        with self._s.lock:
+            self._s.put('capital_mode',mode);self._s.db.commit()
+        return {'ok':True,'message':'已保存：'+('并行观察，单独记录资金候选' if mode=='shadow' else '启用异常净赎回买入过滤；仍由原策略与持仓风控决定买卖')}
+    def add_capital_holding(self,v):
+        from urllib.parse import urlparse
+        from datetime import date
+        from app.capital_data import FUNDS
+        try:
+            subject=str(v['subject']).strip();code=str(v['code']);url=str(v['url']).strip()
+            shares=float(v['shares']);asof=date.fromisoformat(v['asof']);published=date.fromisoformat(v['published'])
+            host=urlparse(url).hostname or ''
+            allowed=['sse.com.cn','szse.cn','cninfo.com.cn','huijin-inv.cn','efunds.com.cn','gffunds.com.cn','icbccs.com.cn','jsfund.cn','huatai-pb.com','chinaamc.com','nffund.com']
+            if not any(host==d or host.endswith('.'+d) for d in allowed) or urlparse(url).scheme!='https' or len(url)>1000:raise ValueError('请输入交易所、巨潮或观察池基金管理人的HTTPS公告链接')
+            if not subject or len(subject)>80 or code not in FUNDS:raise ValueError('请填写主体名称并选择观察池ETF')
+            if not math.isfinite(shares) or shares<0 or shares>1e13:raise ValueError('持有份额须为有效的份数，不能填写亿元金额')
+            if not asof<=published<=now().date():raise ValueError('必须满足：持仓截止日不晚于发布日期，发布日期不在未来')
+            with self._s.lock:
+                if self._s.rows('SELECT id FROM capital_holdings WHERE subject=? AND code=? AND asof=?',(subject,code,asof.isoformat())):raise ValueError('同主体、同ETF、同截止日已有记录，不覆盖原证据')
+                self._s.db.execute('INSERT INTO capital_holdings(subject,code,asof,published,shares,url,entered) VALUES(?,?,?,?,?,?,?)',(subject,code,asof.isoformat(),published.isoformat(),shares,url,now().isoformat()));self._s.db.commit()
+            return {'ok':True,'message':'已登记实名持仓证据；属于人工录入待核验，不作为实时买卖信号'}
+        except Exception as e:return {'ok':False,'message':str(e)}
     def get_rules(self):
         root=Path(getattr(sys,'_MEIPASS',Path(__file__).resolve().parents[1]))
         return json.loads((root/'data/article_rule_registry.json').read_text(encoding='utf-8'))
@@ -22,6 +48,7 @@ class API:
         return {'ok':True,'message':'已备份至 '+str(target)+'（含当前用户加密令牌，请妥善保管）'}
     def refresh(self):
         threading.Thread(target=self._s.refresh,daemon=True).start()
+        self._s.capital.request_refresh()
         self._s.wake.set()
         return {'ok':True}
     def save_settings(self,values):

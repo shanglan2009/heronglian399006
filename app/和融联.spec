@@ -1,11 +1,16 @@
 # -*- mode: python ; coding: utf-8 -*-
 from pathlib import Path
+import ssl
 project = Path(SPECPATH).parent
+# The bundled runtime's SSLContext loads this public certificate policy file
+# relative to ssl.py. Keep certificate validation intact in the frozen app.
+ssl_policy = Path(ssl.__file__).with_name('codex-rejected-cas.pem')
+runtime_data = [(str(ssl_policy), '.')] if ssl_policy.is_file() else []
 a = Analysis(
     [str(project/'app/main.py')],
     pathex=[str(project)],
     binaries=[],
-    datas=[(str(project/'app/ui'), 'app/ui'),(str(project/'data/article_rule_registry.json'),'data')],
+    datas=[(str(project/'app/ui'), 'app/ui'),(str(project/'data/article_rule_registry.json'),'data')]+runtime_data,
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
